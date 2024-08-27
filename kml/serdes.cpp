@@ -455,41 +455,104 @@ void SaveTrackLayer(Writer & writer, TrackLayer const & layer,
   writer << indent << "<width>" << strings::to_string(layer.m_lineWidth) << "</width>\n";
 }
 
-void SaveTrackGeometry(Writer & writer, MultiGeometry const & geom)
+void SaveLineStrings(Writer & writer, MultiGeometry const & geom)
 {
-  size_t const sz = geom.m_lines.size();
-  if (sz == 0)
-  {
-    ASSERT(false, ());
-    return;
-  }
-
   auto linesIndent = kIndent4;
-  if (sz > 1)
+  auto const lineStringsSize = geom.GetNumberOfLinesWithouTimestamps();
+  
+  if (lineStringsSize > 1)
   {
     linesIndent = kIndent8;
     writer << kIndent4 << "<MultiGeometry>\n";
   }
 
-  for (auto const & e : geom.m_lines)
+  for (size_t lineIndex = 0; lineIndex < geom.m_lines.size(); ++lineIndex)
   {
-    if (e.empty())
+    auto const & line = geom.m_lines[lineIndex];
+    if (line.empty())
     {
-      ASSERT(false, ());
+      ASSERT(false, ("Unexpected empty Track"));
       continue;
     }
 
+    // Skip the tracks with the timestamps when writing the <LineString> points.
+    if (geom.HasTimestampsFor(lineIndex))
+      continue;
+
     writer << linesIndent << "<LineString><coordinates>";
 
-    writer << PointToString(e[0]);
-    for (size_t i = 1; i < e.size(); ++i)
-      writer << " " << PointToString(e[i]);
+    writer << PointToString(line[0]);
+    for (size_t pointIndex = 1; pointIndex < line.size(); ++pointIndex)
+      writer << " " << PointToString(line[pointIndex]);
 
     writer << "</coordinates></LineString>\n";
   }
 
-  if (sz > 1)
+  if (lineStringsSize > 1)
     writer << kIndent4 << "</MultiGeometry>\n";
+}
+
+void SaveGxTracks(Writer & writer, MultiGeometry const & geom)
+{
+  auto linesIndent = kIndent4;
+  auto const gxTracksSize = geom.GetNumberOfLinesWithTimestamps();
+  
+  if (gxTracksSize > 1)
+  {
+    linesIndent = kIndent8;
+    writer << kIndent4 << "<gx:MultiTrack>\n";
+    /// @TODO(KK): add the <altitudeMode>absolute</altitudeMode> if needed
+  }
+
+  for (size_t lineIndex = 0; lineIndex < geom.m_lines.size(); ++lineIndex)
+  {
+    auto const & line = geom.m_lines[lineIndex];
+    if (line.empty())
+    {
+      ASSERT(false, ("Unexpected empty Track"));
+      continue;
+    }
+
+    // Skip the tracks without the timestamps when writing the <gx:Track> points.
+    if (!geom.HasTimestampsFor(lineIndex))
+      continue;
+
+    writer << linesIndent << "<gx:Track>\n";
+    /// @TODO(KK): add the <altitudeMode>absolute</altitudeMode> if needed
+
+    auto const & timestampsForLine = geom.m_timestamps[lineIndex];
+    if (line.size() != timestampsForLine.size())
+      MYTHROW(KmlWriter::WriteKmlException, ("Timestamps size", timestampsForLine.size(),
+                                             "mismatch with the points size:", line.size(),
+                                             "for the track:", lineIndex));
+
+    for (size_t pointIndex = 0; pointIndex < line.size(); ++pointIndex)
+      writer << linesIndent << kIndent4 << "<when>" << base::SecondsSinceEpochToString(timestampsForLine[pointIndex]) << "</when>\n";
+
+    for (const auto & point : line)
+      writer << linesIndent << kIndent4 << "<gx:coord>" << PointToGxString(point) << "</gx:coord>\n";
+
+    writer << linesIndent << "</gx:Track>\n";
+  }
+
+  if (gxTracksSize > 1)
+    writer << kIndent4 << "</gx:MultiTrack>\n";
+}
+
+void SaveTrackGeometry(Writer & writer, MultiGeometry const & geom)
+{
+  size_t const sz = geom.m_lines.size();
+  if (sz == 0)
+  {
+    ASSERT(false, ("Unexpected empty MultiGeometry"));
+    return;
+  }
+
+  if (geom.m_lines.size() != geom.m_timestamps.size())
+    CHECK_EQUAL(geom.m_lines.size(), geom.m_timestamps.size(), ("Number of coordinates and timestamps should match"));
+
+  SaveLineStrings(writer, geom);
+  SaveGxTracks(writer, geom);
 }
 
 void SaveTrackExtendedData(Writer & writer, TrackData const & trackData)
@@ -547,7 +610,6 @@ void SaveTrackData(Writer & writer, TrackData const & trackData)
   }
 
   SaveTrackGeometry(writer, trackData.m_geometry);
-
   SaveTrackExtendedData(writer, trackData);
 
   writer << kIndent2 << "</Placemark>\n";
@@ -689,7 +751,10 @@ void KmlParser::ParseLineString(std::string const & s)
   ParseAndAddPoints(line, s, " \n\r\t", ",");
 
   if (line.size() > 1)
+  {
     m_geometry.m_lines.push_back(std::move(line));
+    m_geometry.m_timestamps.emplace_back();
+  }
 }
 
 bool KmlParser::MakeValid()
@@ -769,6 +834,7 @@ bool KmlParser::Push(std::string movedTag)
   {
     m_geometryType = GEOMETRY_TYPE_LINE;
     m_geometry.m_lines.emplace_back();
+    m_geometry.m_timestamps.emplace_back();
   }
   return true;
 }
@@ -973,7 +1039,12 @@ void KmlParser::CharData(std::string & value)
     {
       if (!IsTrack(prevTag))
         return false;
-
+      if (currTag == "when")
+      {
+        auto & timestamps = m_geometry.m_timestamps;
+        ASSERT(!timestamps.empty(), ());
+        timestamps.back().emplace_back(base::StringToTimestamp(value));
+      }
       if (currTag == "coord" || currTag == "gx:coord")
       {
         auto & lines = m_geometry.m_lines;

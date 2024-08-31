@@ -280,8 +280,8 @@ public class MwmActivity extends BaseMwmFragmentActivity
     // by checking all the necessary permissions
     if (TrackRecorder.nativeIsEnabled())
     {
-      TrackRecorder.nativeSetEnabled(false);
-      startTrackRecording(false);
+      if (!startTrackRecording(false))
+        TrackRecorder.nativeSetEnabled(false);
     }
 
     processIntent();
@@ -2263,7 +2263,7 @@ public class MwmActivity extends BaseMwmFragmentActivity
     startActivity(intent);
   }
 
-  private void startTrackRecording(boolean toast)
+  private boolean startTrackRecording(boolean toast)
   {
     if (!LocationUtils.checkFineLocationPermission(this))
     {
@@ -2273,12 +2273,12 @@ public class MwmActivity extends BaseMwmFragmentActivity
       // creation of new methods by using this variable.
       mLocationPermissionRequestedForRecording = true;
       mLocationPermissionRequest.launch(new String[] { ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION });
-      return;
+      return false;
     }
 
     // Check for battery saver permission
     if (!requestBatterySaverPermission(PowerSaveDisclaimerState.SHOWING_FOR_RECORDING))
-      return;
+      return false;
 
     requestPostNotificationsPermission();
 
@@ -2286,6 +2286,7 @@ public class MwmActivity extends BaseMwmFragmentActivity
       Toast.makeText(this, R.string.track_recording, Toast.LENGTH_SHORT).show();
     TrackRecordingService.startForegroundService(getApplicationContext());
     mMapButtonsViewModel.setTrackRecorderState(true);
+    return true;
   }
 
   private void stopTrackRecording()
